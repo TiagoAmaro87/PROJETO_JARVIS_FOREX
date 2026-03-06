@@ -35,6 +35,16 @@ class MT5Interface:
         return df
 
     def send_order(self, symbol, order_type, volume, price, sl, tp, comment="Jarvis SMC"):
+        # SPREAD PROTECTION
+        symbol_info = mt5.symbol_info(symbol)
+        if not symbol_info: return None
+        
+        current_spread = symbol_info.spread
+        # If spread is too high (standard protection: abort if > 3x average)
+        if current_spread > 40: # 4 pips of spread is lethal for SMC
+            logger.warning(f"ABORT ORDER on {symbol}: High Spread Detected ({current_spread} points)")
+            return None
+
         request = {
             "action": mt5.TRADE_ACTION_DEAL,
             "symbol": symbol,

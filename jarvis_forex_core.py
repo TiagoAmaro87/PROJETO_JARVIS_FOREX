@@ -79,14 +79,18 @@ class JarvisOrchestrator:
         if self.analyzer.is_adr_exhausted(state["d1"], price):
             return
 
-        # 2. SMC: Identify H4 Trend & Order Blocks
+        # 2. DXY MASTER FILTER: Focus on USD Index trend
+        dxy_data = self.mt5_api.get_rates("USDX", CONFIG["TF_M15"], n=100)
+        dxy_trend = self.analyzer.get_dxy_trend(dxy_data)
+
+        # 3. SMC: Identify H4 Trend & Order Blocks
         h4_obs = self.analyzer.find_order_blocks(state["h4"])
         last_h4_ob = h4_obs[-1] if h4_obs else None
         
-        # 3. Quant Filter: Z-Score
+        # 4. Quant Filter: Z-Score
         z_score = self.analyzer.get_z_score(state["m15"])
         
-        # 4. MSS Detection
+        # 5. MSS Detection
         mss = self.analyzer.detect_mss(state["m5"])
         
         if last_h4_ob:
@@ -98,7 +102,17 @@ class JarvisOrchestrator:
             in_zone = (entry_price <= last_h4_ob['top'] + buffer) and (entry_price >= last_h4_ob['bottom'] - buffer)
             
             if in_zone and mss == last_h4_ob['type']:
-                if (mss == 'bullish' and z_score < -1.2) or (mss == 'bearish' and z_score > 1.2): 
+                # ELITE DXY LOGIC:
+                # If buying GBPUSD (USD is quote), we want DXY bearish
+                # If buying USDJPY (USD is base), we want DXY bullish
+                is_usd_base = symbol.startswith("USD")
+                dxy_aligned = False
+                if mss == 'bullish':
+                    dxy_aligned = (dxy_trend == 'bullish') if is_usd_base else (dxy_trend == 'bearish')
+                else: # bearish trade
+                    dxy_aligned = (dxy_trend == 'bearish') if is_usd_base else (dxy_trend == 'bullish')
+
+                if dxy_aligned and (abs(z_score) > 1.2):
                     self.trigger_trade(symbol, mss, entry_price)
 
     def trigger_trade(self, symbol, trend, price):

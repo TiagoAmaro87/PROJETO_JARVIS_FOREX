@@ -87,3 +87,13 @@ class MarketAnalyzer:
         daily_open = df_d1['open'].iloc[-1]
         dist = abs(current_price - daily_open)
         return dist > (range_mean * 0.85)
+
+    def get_dxy_trend(self, df_dxy):
+        """Analyze Dollar Index trend to filter USD-based trades."""
+        if df_dxy.empty: return "neutral"
+        # Using simple SMA cross context for DXY
+        sma = df_dxy['close'].rolling(20).mean().iloc[-1]
+        current = df_dxy['close'].iloc[-1]
+        if current > sma: return "bullish"
+        if current < sma: return "bearish"
+        return "neutral"

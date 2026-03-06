@@ -61,6 +61,27 @@ class MarketAnalyzer:
         z_score = (prices.iloc[-1] - ma.iloc[-1]) / std.iloc[-1] if std.iloc[-1] != 0 else 0
         return z_score
 
+    def get_rsi(self, df, period=14):
+        delta = df['close'].diff()
+        gain = (delta.where(delta > 0, 0)).rolling(window=period).mean()
+        loss = (-delta.where(delta < 0, 0)).rolling(window=period).mean()
+        rs = gain / loss
+        return 100 - (100 / (1 + rs)).iloc[-1]
+
+    def get_bollinger_bands(self, df, period=20, std_dev=2):
+        ma = df['close'].rolling(period).mean()
+        std = df['close'].rolling(period).std()
+        upper = ma + (std * std_dev)
+        lower = ma - (std * std_dev)
+        return upper.iloc[-1], lower.iloc[-1]
+
+    def get_trend_ema(self, df):
+        ema_fast = df['close'].ewm(span=20).mean().iloc[-1]
+        ema_slow = df['close'].ewm(span=50).mean().iloc[-1]
+        if ema_fast > ema_slow: return "bullish"
+        if ema_fast < ema_slow: return "bearish"
+        return "neutral"
+
     def detect_mss(self, df_m5):
         """Detect Market Structure Shift (MSS) on M5."""
         if len(df_m5) < 10: return False

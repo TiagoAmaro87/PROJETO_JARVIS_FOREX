@@ -1,6 +1,7 @@
 import pandas as pd
 import numpy as np
 from scipy import stats
+from datetime import datetime
 
 class MarketAnalyzer:
     def __init__(self, config):
@@ -72,3 +73,17 @@ class MarketAnalyzer:
         if current_close > last_high: return 'bullish'
         if current_close < last_low: return 'bearish'
         return None
+
+    def is_trading_session(self):
+        """Restricts trading to London and NY high-liquidity windows."""
+        utc_hour = datetime.utcnow().hour
+        # 07:00 to 20:00 UTC covers the main session overlaps
+        return 7 <= utc_hour <= 20
+
+    def is_adr_exhausted(self, df_d1, current_price):
+        """Prevents trading if daily range is already 85% covered."""
+        if len(df_d1) < 5: return False
+        range_mean = (df_d1['high'].tail(5) - df_d1['low'].tail(5)).mean()
+        daily_open = df_d1['open'].iloc[-1]
+        dist = abs(current_price - daily_open)
+        return dist > (range_mean * 0.85)

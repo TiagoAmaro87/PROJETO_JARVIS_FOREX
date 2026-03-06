@@ -10,7 +10,8 @@ import MetaTrader5 as mt5
 
 # --- SYSTEM CONFIGuration (Independent of Manual Interaction) ---
 CONFIG = {
-    "SYMBOLS": ["EURUSD", "GBPUSD", "USDJPY", "AUDUSD", "USDCHF"],
+    # Removed EURUSD temporarily to optimize performance based on Elite Audit results
+    "SYMBOLS": ["GBPUSD", "USDJPY", "AUDUSD", "USDCHF"],
     "TF_H4": mt5.TIMEFRAME_H4,
     "TF_M15": mt5.TIMEFRAME_M15,
     "TF_M5": mt5.TIMEFRAME_M5,
@@ -49,80 +50,84 @@ class JarvisOrchestrator:
         return True
 
     def fetch_market_state(self, symbol):
-        """Unified market view across TFs."""
+        """Unified market view across TFs including D1 for ADR."""
         h4_rates = self.mt5_api.get_rates(symbol, CONFIG["TF_H4"], n=100)
         m15_rates = self.mt5_api.get_rates(symbol, CONFIG["TF_M15"], n=300)
         m5_rates = self.mt5_api.get_rates(symbol, CONFIG["TF_M5"], n=100)
+        d1_rates = self.mt5_api.get_rates(symbol, mt5.TIMEFRAME_D1, n=10)
         
-        if h4_rates.empty or m15_rates.empty or m5_rates.empty:
+        if h4_rates.empty or m15_rates.empty or m5_rates.empty or d1_rates.empty:
             return None
         
         return {
-            "h4": h4_rates,
-            "m15": m15_rates,
-            "m5": m5_rates
+            "h4": h4_rates, "m15": m15_rates, "m5": m5_rates, "d1": d1_rates
         }
 
     def process_symbol(self, symbol):
+        # 0. Session Filter: Only trade during high liquidity
+        if not self.analyzer.is_trading_session():
+            return
+
         state = self.fetch_market_state(symbol)
         if not state: return
 
-        # 1. SMC: Identify H4 Trend & Order Blocks
+        current_tick = mt5.symbol_info_tick(symbol)
+        if not current_tick: return
+        price = current_tick.ask
+
+        # 1. ADR Check: Is the market already exhausted for the day?
+        if self.analyzer.is_adr_exhausted(state["d1"], price):
+            return
+
+        # 2. SMC: Identify H4 Trend & Order Blocks
         h4_obs = self.analyzer.find_order_blocks(state["h4"])
         last_h4_ob = h4_obs[-1] if h4_obs else None
         
-        # 2. SMC: Identify M15 Entry FVGs/OBs
-        m15_obs = self.analyzer.find_order_blocks(state["m15"])
-        m15_fvgs = self.analyzer.find_fvg(state["m15"])
-        
-        # 3. Quant Filter: Z-Score for statistical exhaustion
+        # 3. Quant Filter: Z-Score
         z_score = self.analyzer.get_z_score(state["m15"])
         
         # 4. MSS Detection
         mss = self.analyzer.detect_mss(state["m5"])
         
-        # 5. Entry Signal Logic: H4 OB touch -> M15 FVG Presence -> M5 MSS Confirmation
-        current_tick = mt5.symbol_info_tick(symbol)
-        if not current_tick: return
-
         if last_h4_ob:
-            price = current_tick.ask if last_h4_ob['type'] == 'bullish' else current_tick.bid
+            entry_price = current_tick.ask if last_h4_ob['type'] == 'bullish' else current_tick.bid
             
-            # Zone Check: Is price between top and bottom of the H4 OB candle?
-            # Updated to 3 pips buffer based on backtest audit
+            # Zone Check
             point = mt5.symbol_info(symbol).point
-            buffer = 3 * point * 10
+            buffer = 3 * point * 10 
+            in_zone = (entry_price <= last_h4_ob['top'] + buffer) and (entry_price >= last_h4_ob['bottom'] - buffer)
             
-            in_zone = (price <= last_h4_ob['top'] + buffer) and (price >= last_h4_ob['bottom'] - buffer)
-            
-            if in_zone: 
-                if mss == last_h4_ob['type']: # MSS Alignment
-                    # Updated Z-score to 1.2 for better trade frequency
-                    if (mss == 'bullish' and z_score < -1.2) or (mss == 'bearish' and z_score > 1.2): 
-                        self.trigger_trade(symbol, mss, price, last_h4_ob['bottom'] if mss=='bullish' else last_h4_ob['top'])
+            if in_zone and mss == last_h4_ob['type']:
+                if (mss == 'bullish' and z_score < -1.2) or (mss == 'bearish' and z_score > 1.2): 
+                    self.trigger_trade(symbol, mss, entry_price)
 
-    def trigger_trade(self, symbol, trend, price, ob_price):
-        # Updated SL to 2.0 * ATR for noise protection
+    def trigger_trade(self, symbol, trend, price):
         point = mt5.symbol_info(symbol).point
         atr = self.analyzer.calculate_atr(self.mt5_api.get_rates(symbol, CONFIG["TF_M15"], n=50))
         
         sl_points = atr * 2.0 / point
+        tp1_dist = sl_points * 1.5
+        tp2_dist = sl_points * 3.0 # TP2 is further, to be trailed
+        
+        lot_total = self.risk.calculate_lot_size(symbol, sl_points)
+        lot_split = round(lot_total / 2, 2)
+        if lot_split < 0.01: lot_split = 0.01
+
         if trend == 'bullish':
             sl = price - (sl_points * point)
-            tp = price + (sl_points * 1.5 * point) # RR adjusted to 1.5
+            tp1 = price + (tp1_dist * point)
+            tp2 = price + (tp2_dist * point)
             order_type = mt5.ORDER_TYPE_BUY
         else:
             sl = price + (sl_points * point)
-            tp = price - (sl_points * 1.5 * point) # RR adjusted to 1.5
+            tp1 = price - (tp1_dist * point)
+            tp2 = price - (tp2_dist * point)
             order_type = mt5.ORDER_TYPE_SELL
         
-        lot = self.risk.calculate_lot_size(symbol, sl_points)
-        
-        # Final Correlation Check
-        # ... logic if needed across symbols
-        
-        logger.info(f"Triggering Jarvis SMC Execution on {symbol} | Type: {trend} | Lot: {lot}")
-        self.mt5_api.send_order(symbol, order_type, lot, price, sl, tp, comment="Jarvis Autonomous SMC")
+        logger.info(f"Jarvis ELITE Entry on {symbol} | Split Orders: 2x {lot_split}")
+        # Send 2 orders (Scale-out strategy)
+        self.mt5_api.send_order(symbol, order_type, lot_split, price, sl, tp1, comment="Jarvis TP1")
+        self.mt5_api.send_order(symbol, order_type, lot_split, price, sl, tp2, comment="Jarvis TP2-Trail")
 
     def manage_positions(self):
         positions = self.mt5_api.get_positions()
@@ -132,24 +137,48 @@ class JarvisOrchestrator:
             symbol = pos.symbol
             tick = mt5.symbol_info_tick(symbol)
             point = mt5.symbol_info(symbol).point
-            
-            # Break-Even & Trailing Stop Logic
             entry = pos.price_open
+            
+            # PNL Calculation in points
             profit_points = (tick.bid - entry) / point if pos.type == mt5.ORDER_TYPE_BUY else (entry - tick.ask) / point
-            
             sl_dist = abs(entry - pos.sl) / point if pos.sl else 100
-            
-            # If profit is 1:1, move Stop Loss to BE + fees
+
+            # 1. Break-Even Implementation (When 1:1 reached)
             if profit_points >= sl_dist and (pos.sl < entry if pos.type == mt5.ORDER_TYPE_BUY else pos.sl > entry):
-                be_sl = entry + (5 * point) if pos.type == mt5.ORDER_TYPE_BUY else entry - (5 * point)
+                be_sl = entry + (2 * point * 10) if pos.type == mt5.ORDER_TYPE_BUY else entry - (2 * point * 10)
                 self.mt5_api.modify_position(pos.ticket, be_sl, pos.tp)
-                logger.info(f"Jarvis PROTECT: Move to BE on {symbol}")
+                logger.info(f"Jarvis PROTECT: BE+ set for {symbol} Ticket {pos.ticket}")
+
+            # 2. Dynamic Trailing for TP2 orders
+            if "Trail" in pos.comment and profit_points > sl_dist * 1.5:
+                # Trail by 1.5x ATR
+                atr = self.analyzer.calculate_atr(self.mt5_api.get_rates(symbol, CONFIG["TF_M15"], n=50))
+                new_sl = tick.bid - (atr * 1.5) if pos.type == mt5.ORDER_TYPE_BUY else tick.ask + (atr * 1.5)
+                
+                # Only move SL favorably
+                if pos.type == mt5.ORDER_TYPE_BUY and new_sl > pos.sl:
+                    self.mt5_api.modify_position(pos.ticket, new_sl, pos.tp)
+                elif pos.type == mt5.ORDER_TYPE_SELL and new_sl < pos.sl:
+                    self.mt5_api.modify_position(pos.ticket, new_sl, pos.tp)
 
     def main_loop(self):
         if not self.bootstrap(): return
         
+        last_session_status = None
+        
         while self.is_running:
             try:
+                # Session Awareness
+                is_active = self.analyzer.is_trading_session()
+                if is_active != last_session_status:
+                    status = "ACTIVE (London/NY Window)" if is_active else "HIBERNATING (Low Liquidity)"
+                    logger.info(f"Jarvis Session Status Change: {status}")
+                    last_session_status = is_active
+
+                if not is_active:
+                    time.sleep(300) # Sleep longer during hibernation
+                    continue
+
                 # Latency & Health Check
                 start_calc = time.time()
                 

@@ -8,12 +8,15 @@ class MarketAnalyzer:
         self.config = config
 
     def calculate_atr(self, df, period=14):
+        return self.calculate_atr_series(df, period).iloc[-1]
+
+    def calculate_atr_series(self, df, period=14):
         high_low = df['high'] - df['low']
         high_close = np.abs(df['high'] - df['close'].shift())
         low_close = np.abs(df['low'] - df['close'].shift())
         ranges = pd.concat([high_low, high_close, low_close], axis=1)
         true_range = np.max(ranges, axis=1)
-        return true_range.rolling(period).mean().iloc[-1]
+        return true_range.rolling(period).mean()
 
     def find_order_blocks(self, df, n=100):
         """Identify significant Order Blocks (candle with extreme volume followed by reversal)."""

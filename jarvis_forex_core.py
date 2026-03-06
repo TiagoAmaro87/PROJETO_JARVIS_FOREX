@@ -43,10 +43,20 @@ class JarvisHolyGrail:
         if not self.bootstrap(): return
         while True:
             try:
-                # 08:00 - 16:00 UTC Only
-                now = datetime.datetime.utcnow().hour
-                if not (8 <= now <= 16): 
+                now_utc = datetime.datetime.utcnow()
+                
+                # 1. FRIDAY KILL-SWITCH: No trading after Friday 16:00 UTC
+                if now_utc.weekday() == 4 and now_utc.hour >= 16:
+                    logger.info("Friday Kill-Switch active. Hibernating for the weekend.")
+                    time.sleep(3600); continue
+
+                # 2. SESSION FILTER: 08:00 - 16:00 UTC Only
+                if not (8 <= now_utc.hour <= 16): 
                     time.sleep(600); continue
+
+                # 3. GLOBAL CORRELATION LOCK: Only 1 trade total for 1k bank protection
+                if self.has_any_position():
+                    time.sleep(60); continue
 
                 for symbol in CONFIG["SYMBOLS"]:
                     self.process_symbol(symbol)
@@ -58,11 +68,14 @@ class JarvisHolyGrail:
 
     def process_symbol(self, symbol):
         df = self.mt5.get_rates(symbol, mt5.TIMEFRAME_M15, n=250)
-        if df.empty or self.has_position(symbol): return
+        if df.empty: return
 
-        # Cooldown: 1 trade per 12 hours per symbol to ensure high quality
-        last_t = self.last_trade_time.get(symbol)
-        if last_t and (datetime.datetime.now() - last_t).total_seconds() < 12 * 3600:
+        # 4. ATR VOLATILITY GUARD: Avoid news spikes (Max 2x Average)
+        atr_series = self.analyzer.calculate_atr_series(df)
+        current_atr = atr_series.iloc[-1]
+        mean_atr = atr_series.tail(14).mean()
+        if current_atr > (mean_atr * 2.0):
+            logger.warning(f"SPIKE PROTECTION: High Volatility on {symbol} (ATR: {current_atr:.5f} > Buffer). Entry Blocked.")
             return
 
         # Indicators
@@ -71,21 +84,21 @@ class JarvisHolyGrail:
         rsi = self.analyzer.get_rsi(df)
         
         last = df.iloc[-1]
-        prev = df.iloc[-2]
         price = mt5.symbol_info_tick(symbol).ask if last['close'] > last['ema200'] else mt5.symbol_info_tick(symbol).bid
 
         # --- HOLY GRAIL LOGIC ---
-        # Long: Above EMA200 + Pullback to EMA20 + RSI < 40 (Exhaustion)
         if last['close'] > last['ema200'] and last['low'] <= last['ema20'] and rsi < 40:
             sl_pts = abs(price - last['ema200']) / mt5.symbol_info(symbol).point
             if sl_pts < 150: sl_pts = 150 # Safety min
             self.fire(symbol, mt5.ORDER_TYPE_BUY, price, sl_pts)
 
-        # Short: Below EMA200 + Pullback to EMA20 + RSI > 60 (Exhaustion)
         elif last['close'] < last['ema200'] and last['high'] >= last['ema20'] and rsi > 60:
             sl_pts = abs(price - last['ema200']) / mt5.symbol_info(symbol).point
             if sl_pts < 150: sl_pts = 150 # Safety min
             self.fire(symbol, mt5.ORDER_TYPE_SELL, price, sl_pts)
+
+    def has_any_position(self):
+        return len(mt5.positions_get()) > 0
 
     def fire(self, symbol, type, price, sl_pts):
         point = mt5.symbol_info(symbol).point
@@ -95,8 +108,7 @@ class JarvisHolyGrail:
         tp = price + (sl_pts * CONFIG["RR"] * point) if type == mt5.ORDER_TYPE_BUY else price - (sl_pts * CONFIG["RR"] * point)
         
         logger.info(f"GRAIL SIGNAL: {symbol} | RR 1:3 | SL Pts: {sl_pts}")
-        if self.mt5.send_order(symbol, type, lot, price, sl, tp, comment="JarvisGrail_1K"):
-            self.last_trade_time[symbol] = datetime.datetime.now()
+        self.mt5.send_order(symbol, type, lot, price, sl, tp, comment="JarvisGrail_1K")
 
     def has_position(self, symbol):
         return len(mt5.positions_get(symbol=symbol)) > 0

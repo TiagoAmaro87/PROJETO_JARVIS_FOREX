@@ -1,0 +1,22 @@
+# MT5 Files
+*.exe
+*.dll
+*.lic
+*.dat
+*.chr
+*.tpl
+*.wav
+*.welcome
+*.set
+Bases/
+Config/
+Profiles/
+Logs/
+MQL5/
+Sounds/
+
+# Python logs and secrets
+jarvis_forex.log
+__pycache__/
+*.pyc
+.env

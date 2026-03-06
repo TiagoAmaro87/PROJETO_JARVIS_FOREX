@@ -41,10 +41,22 @@ class JarvisHolyGrail:
 
     def run(self):
         if not self.bootstrap(): return
+        start_balance = self.mt5.get_account_info().balance
+        
         while True:
             try:
+                acc = self.mt5.get_account_info()
                 now_utc = datetime.datetime.utcnow()
+                daily_pnl = acc.equity - start_balance
                 
+                # --- VISUAL DASHBOARD ---
+                print("\n" + "="*45)
+                print(f" JARVIS sniper - STATUS: {'LIVE' if 8 <= now_utc.hour <= 16 else 'SLEEPING'}")
+                print(f" CAPITAL: ${acc.equity:,.2f} | DAILY PnL: ${daily_pnl:>+7.2f}")
+                print(f" PST LOCK: {'ACTIVE' if self.has_any_position() else 'READY'}")
+                print(f" TIME: {now_utc.strftime('%H:%M:%S UTC')} | DAY: {now_utc.strftime('%A')}")
+                print("="*45)
+
                 # 1. FRIDAY KILL-SWITCH
                 if now_utc.weekday() == 4 and now_utc.hour >= 16:
                     time.sleep(3600); continue
@@ -53,7 +65,7 @@ class JarvisHolyGrail:
                 if not (8 <= now_utc.hour <= 16): 
                     time.sleep(600); continue
 
-                # 3. GLOBAL CORRELATION LOCK (1k Bank Protection)
+                # 3. GLOBAL CORRELATION LOCK
                 if self.has_any_position():
                     time.sleep(60); continue
 

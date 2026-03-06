@@ -45,16 +45,15 @@ class JarvisHolyGrail:
             try:
                 now_utc = datetime.datetime.utcnow()
                 
-                # 1. FRIDAY KILL-SWITCH: No trading after Friday 16:00 UTC
+                # 1. FRIDAY KILL-SWITCH
                 if now_utc.weekday() == 4 and now_utc.hour >= 16:
-                    logger.info("Friday Kill-Switch active. Hibernating for the weekend.")
                     time.sleep(3600); continue
 
-                # 2. SESSION FILTER: 08:00 - 16:00 UTC Only
+                # 2. PEAK SESSION: 08:00 - 16:00 UTC
                 if not (8 <= now_utc.hour <= 16): 
                     time.sleep(600); continue
 
-                # 3. GLOBAL CORRELATION LOCK: Only 1 trade total for 1k bank protection
+                # 3. GLOBAL CORRELATION LOCK (1k Bank Protection)
                 if self.has_any_position():
                     time.sleep(60); continue
 
@@ -63,52 +62,50 @@ class JarvisHolyGrail:
                 
                 time.sleep(60)
             except Exception as e:
-                logger.error(f"Grail Loop Error: {e}")
+                logger.error(f"Hyper Loop Error: {e}")
                 time.sleep(10)
 
     def process_symbol(self, symbol):
         df = self.mt5.get_rates(symbol, mt5.TIMEFRAME_M15, n=250)
         if df.empty: return
 
-        # 4. ATR VOLATILITY GUARD: Avoid news spikes (Max 2x Average)
+        # 4. ATR SPIKE GUARD
         atr_series = self.analyzer.calculate_atr_series(df)
-        current_atr = atr_series.iloc[-1]
-        mean_atr = atr_series.tail(14).mean()
-        if current_atr > (mean_atr * 2.0):
-            logger.warning(f"SPIKE PROTECTION: High Volatility on {symbol} (ATR: {current_atr:.5f} > Buffer). Entry Blocked.")
+        if (atr_series.iloc[-1] > atr_series.tail(14).mean() * 2.0):
             return
 
-        # Indicators
+        # 5. HYPER-SELECT LOGIC (RR 1:4)
         df['ema200'] = df['close'].ewm(span=200).mean()
-        df['ema20'] = df['close'].ewm(span=20).mean()
+        df['ema10'] = df['close'].ewm(span=10).mean()
         rsi = self.analyzer.get_rsi(df)
         
         last = df.iloc[-1]
         price = mt5.symbol_info_tick(symbol).ask if last['close'] > last['ema200'] else mt5.symbol_info_tick(symbol).bid
 
-        # --- HOLY GRAIL LOGIC ---
-        if last['close'] > last['ema200'] and last['low'] <= last['ema20'] and rsi < 40:
-            sl_pts = abs(price - last['ema200']) / mt5.symbol_info(symbol).point
-            if sl_pts < 150: sl_pts = 150 # Safety min
-            self.fire(symbol, mt5.ORDER_TYPE_BUY, price, sl_pts)
-
-        elif last['close'] < last['ema200'] and last['high'] >= last['ema20'] and rsi > 60:
-            sl_pts = abs(price - last['ema200']) / mt5.symbol_info(symbol).point
-            if sl_pts < 150: sl_pts = 150 # Safety min
-            self.fire(symbol, mt5.ORDER_TYPE_SELL, price, sl_pts)
+        # COMPRA: Tendencia Alta + Pullback EMA10 + RSI Exaustao
+        if last['close'] > last['ema200'] and last['low'] <= last['ema10'] and rsi < 35:
+            self.fire_hyper(symbol, mt5.ORDER_TYPE_BUY, price, 4.0)
+        
+        # VENDA: Tendencia Baixa + Pullback EMA10 + RSI Exaustao
+        elif last['close'] < last['ema200'] and last['high'] >= last['ema10'] and rsi > 65:
+            self.fire_hyper(symbol, mt5.ORDER_TYPE_SELL, price, 4.0)
 
     def has_any_position(self):
         return len(mt5.positions_get()) > 0
 
-    def fire(self, symbol, type, price, sl_pts):
+    def fire_hyper(self, symbol, type, price, rr):
+        atr = self.analyzer.calculate_atr(self.mt5.get_rates(symbol, mt5.TIMEFRAME_M15, n=50))
         point = mt5.symbol_info(symbol).point
+        
+        sl_pts = (atr * 1.5) / point # Tighter SL
+        if sl_pts < 100: sl_pts = 100
+        
         lot = self.risk.calculate_lot_size(symbol, sl_pts)
-        
         sl = price - (sl_pts * point) if type == mt5.ORDER_TYPE_BUY else price + (sl_pts * point)
-        tp = price + (sl_pts * CONFIG["RR"] * point) if type == mt5.ORDER_TYPE_BUY else price - (sl_pts * CONFIG["RR"] * point)
+        tp = price + (sl_pts * rr * point) if type == mt5.ORDER_TYPE_BUY else price - (sl_pts * rr * point)
         
-        logger.info(f"GRAIL SIGNAL: {symbol} | RR 1:3 | SL Pts: {sl_pts}")
-        self.mt5.send_order(symbol, type, lot, price, sl, tp, comment="JarvisGrail_1K")
+        logger.info(f"HYPER GATILHO: {symbol} | RR 1:{rr} | SL Pts: {sl_pts:.0f}")
+        self.mt5.send_order(symbol, type, lot, price, sl, tp, comment="JarvisHyper_1K")
 
     def has_position(self, symbol):
         return len(mt5.positions_get(symbol=symbol)) > 0

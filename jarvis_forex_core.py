@@ -82,37 +82,38 @@ class JarvisOrchestrator:
         mss = self.analyzer.detect_mss(state["m5"])
         
         # 5. Entry Signal Logic: H4 OB touch -> M15 FVG Presence -> M5 MSS Confirmation
-        # Check current price vs H4 OB
         current_tick = mt5.symbol_info_tick(symbol)
         if not current_tick: return
 
-        # Simplified SMC Strategy entry logic
         if last_h4_ob:
             price = current_tick.ask if last_h4_ob['type'] == 'bullish' else current_tick.bid
             
-            # Distance from H4 OB (Within 10 pips)
+            # Zone Check: Is price between top and bottom of the H4 OB candle?
+            # Updated to 3 pips buffer based on backtest audit
             point = mt5.symbol_info(symbol).point
-            dist = abs(price - last_h4_ob['price']) / (point * 10)
+            buffer = 3 * point * 10
             
-            if dist < 1.0: # Near H4 OB
+            in_zone = (price <= last_h4_ob['top'] + buffer) and (price >= last_h4_ob['bottom'] - buffer)
+            
+            if in_zone: 
                 if mss == last_h4_ob['type']: # MSS Alignment
-                    if (mss == 'bullish' and z_score < -2.0) or (mss == 'bearish' and z_score > 2.0): # Quant Filter
-                        # Execute Trade
-                        self.trigger_trade(symbol, mss, price, last_h4_ob['price'])
+                    # Updated Z-score to 1.2 for better trade frequency
+                    if (mss == 'bullish' and z_score < -1.2) or (mss == 'bearish' and z_score > 1.2): 
+                        self.trigger_trade(symbol, mss, price, last_h4_ob['bottom'] if mss=='bullish' else last_h4_ob['top'])
 
     def trigger_trade(self, symbol, trend, price, ob_price):
-        # Stop Loss at the extreme of the signal wick/OB
+        # Updated SL to 2.0 * ATR for noise protection
         point = mt5.symbol_info(symbol).point
         atr = self.analyzer.calculate_atr(self.mt5_api.get_rates(symbol, CONFIG["TF_M15"], n=50))
         
-        sl_points = atr * 1.5 / point
+        sl_points = atr * 2.0 / point
         if trend == 'bullish':
             sl = price - (sl_points * point)
-            tp = price + (sl_points * 3 * point) # 1:3 RR
+            tp = price + (sl_points * 1.5 * point) # RR adjusted to 1.5
             order_type = mt5.ORDER_TYPE_BUY
         else:
             sl = price + (sl_points * point)
-            tp = price - (sl_points * 3 * point) # 1:3 RR
+            tp = price - (sl_points * 1.5 * point) # RR adjusted to 1.5
             order_type = mt5.ORDER_TYPE_SELL
         
         lot = self.risk.calculate_lot_size(symbol, sl_points)

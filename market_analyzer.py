@@ -18,14 +18,26 @@ class MarketAnalyzer:
         """Identify significant Order Blocks (candle with extreme volume followed by reversal)."""
         df['vol_ma'] = df['tick_volume'].rolling(20).mean()
         obs = []
-        for i in range(len(df) - n, len(df)):
-            if df['tick_volume'].iloc[i] > df['vol_ma'].iloc[i] * 1.5:
+        # Look back through the provided window
+        for i in range(len(df) - n, len(df) - 2):
+            if i < 0: continue
+            if df['tick_volume'].iloc[i] > df['vol_ma'].iloc[i] * 1.1:
                 # Bullish OB: Large volume bearish candle followed by higher close
                 if df['close'].iloc[i] < df['open'].iloc[i] and df['close'].iloc[i+1:i+3].max() > df['high'].iloc[i]:
-                    obs.append({'type': 'bullish', 'price': df['low'].iloc[i], 'time': df['time'].iloc[i]})
+                    obs.append({
+                        'type': 'bullish', 
+                        'top': df['high'].iloc[i], 
+                        'bottom': df['low'].iloc[i], 
+                        'time': df['time'].iloc[i]
+                    })
                 # Bearish OB: Large volume bullish candle followed by lower close
                 elif df['close'].iloc[i] > df['open'].iloc[i] and df['close'].iloc[i+1:i+3].min() < df['low'].iloc[i]:
-                    obs.append({'type': 'bearish', 'price': df['high'].iloc[i], 'time': df['time'].iloc[i]})
+                    obs.append({
+                        'type': 'bearish', 
+                        'top': df['high'].iloc[i], 
+                        'bottom': df['low'].iloc[i], 
+                        'time': df['time'].iloc[i]
+                    })
         return obs
 
     def find_fvg(self, df, n=50):
